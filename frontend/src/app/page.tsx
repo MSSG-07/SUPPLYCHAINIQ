@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Row = Record<string, string | number | null>;
 type Field = {
@@ -77,13 +77,13 @@ const groups: Record<string, string[]> = {
   ],
 };
 const nav = [
-  ["overview", "Overview", "▦"],
-  ["inventory", "Inventory", "◫"],
-  ["procurement", "Procurement", "▤"],
-  ["sales", "Sales orders", "◈"],
-  ["distribution", "Distribution", "↗"],
-  ["explorer", "Data explorer", "▥"],
-  ["insights", "Insights", "◩"],
+  ["overview", "Overview", "layout"],
+  ["inventory", "Inventory", "box"],
+  ["procurement", "Procurement", "bag"],
+  ["sales", "Sales orders", "cart"],
+  ["distribution", "Distribution", "truck"],
+  ["explorer", "Data explorer", "database"],
+  ["insights", "Insights", "chart"],
 ];
 const money = (value: unknown) =>
   `₹${Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
@@ -114,6 +114,8 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
+    layout: <path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z" />,
+    chart: <path d="M3 20h18M5 17v-5h4v5M11 17V5h4v12M17 17V9h4v8" />,
     plus: <path d="M12 5v14M5 12h14" />,
     arrow: <path d="M5 12h14m-6-6 6 6-6 6" />,
     refresh: (
@@ -277,9 +279,12 @@ export default function Home() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(async () => {
+    setRefreshing(true);
     try {
       const [m, d, i, ...lists] = await Promise.all([
         api<Meta>("/api/meta"),
@@ -300,6 +305,7 @@ export default function Home() {
       setError((exc as Error).message);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
   useEffect(() => {
@@ -311,6 +317,44 @@ export default function Home() {
       return () => clearTimeout(timer);
     }
   }, [toast]);
+  useEffect(() => {
+    if (!modal) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const dialog = dialogRef.current;
+    const focusable = () =>
+      Array.from(
+        dialog?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href]',
+        ) || [],
+      );
+    focusable()[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setModal(null);
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
+  }, [modal]);
 
   const openEntity = (table: string, row?: Row) => {
     setError("");
@@ -491,14 +535,15 @@ export default function Home() {
           </div>
         </div>
         <div className="sidebar-label">WORKSPACE</div>
-        <nav>
+        <nav aria-label="Main navigation">
           {nav.map(([id, label, icon]) => (
             <button
               key={id}
               className={`nav-item ${view === id ? "active" : ""}`}
+              aria-pressed={view === id}
               onClick={() => setView(id)}
             >
-              <span className="nav-icon">{icon}</span>
+              <span className="nav-icon"><Icon name={icon} size={19} /></span>
               <span>{label}</span>
               {id === "inventory" && dashboard?.metrics.low_stock ? (
                 <em>{dashboard.metrics.low_stock}</em>
@@ -507,11 +552,11 @@ export default function Home() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className="system">
+          <div className={`system ${dashboard ? "online" : "pending"}`}>
             <Icon name="database" />
             <div>
-              <strong>System online</strong>
-              <span>SQLite · FastAPI</span>
+              <strong>{dashboard ? "Data connected" : "Connecting to data"}</strong>
+              <span>FastAPI · inventory database</span>
             </div>
             <i />
           </div>
@@ -531,11 +576,18 @@ export default function Home() {
           </div>
           <div className="top-actions">
             <span>Live operations</span>
-            <button title="Refresh" onClick={() => void reload()}>
+            <button
+              aria-label={refreshing ? "Refreshing data" : "Refresh data"}
+              title="Refresh"
+              className={refreshing ? "refreshing" : ""}
+              disabled={refreshing}
+              onClick={() => void reload()}
+            >
               <Icon name="refresh" />
             </button>
             <button
               title="Low stock alerts"
+              aria-label="View low stock alerts"
               onClick={() => setView("inventory")}
             >
               <Icon name="alert" />
@@ -545,22 +597,22 @@ export default function Home() {
         </header>
         <div className="content">
           {error && (
-            <div className="error">
+            <div className="error" role="alert">
               <Icon name="alert" />
               <span>{error}</span>
-              <button onClick={() => setError("")}>
+              <button aria-label="Dismiss error" onClick={() => setError("")}>
                 <Icon name="close" size={16} />
               </button>
             </div>
           )}
           {toast && (
-            <div className="toast">
+            <div className="toast" role="status">
               <Icon name="check" size={16} />
               {toast}
             </div>
           )}
           {loading ? (
-            <div className="loading">Loading SupplyChainIQ…</div>
+            <div className="loading" role="status">Loading SupplyChainIQ…</div>
           ) : (
             <>
               {view === "overview" && dashboard && (
@@ -743,6 +795,9 @@ export default function Home() {
                             </div>
                           </div>
                         ))}
+                        {!dashboard.movements.length && (
+                          <Empty text="Stock changes will appear here after a receipt, sale, or adjustment." />
+                        )}
                       </div>
                     </section>
                     <section className="panel">
@@ -1082,7 +1137,7 @@ export default function Home() {
                     )}
                   </Heading>
                   <div className="explorer">
-                    <aside className="entity-nav">
+                    <aside className="entity-nav" aria-label="Data tables">
                       {Object.entries(groups).map(([group, names]) => (
                         <div key={group}>
                           <small>{group}</small>
@@ -1090,6 +1145,7 @@ export default function Home() {
                             <button
                               key={name}
                               className={entity === name ? "selected" : ""}
+                              aria-pressed={entity === name}
                               onClick={() => {
                                 setEntity(name);
                                 setSearch("");
@@ -1116,6 +1172,7 @@ export default function Home() {
                         <label className="search">
                           <Icon name="search" size={17} />
                           <input
+                            aria-label={`Search ${labels[entity]} records`}
                             value={search}
                             onChange={(event) => setSearch(event.target.value)}
                             placeholder="Search records…"
@@ -1235,6 +1292,9 @@ export default function Home() {
                             <b>{money(row.stock_value)}</b>
                           </div>
                         ))}
+                        {!insights?.inventory.length && (
+                          <Empty text="Add stock to see its value across warehouses." />
+                        )}
                       </div>
                     </section>
                     <section className="panel">
@@ -1257,6 +1317,9 @@ export default function Home() {
                             <b>{row.score ? `★ ${row.score}` : "—"}</b>
                           </div>
                         ))}
+                        {!insights?.procurement.length && (
+                          <Empty text="Supplier activity and scores will appear here." />
+                        )}
                       </div>
                     </section>
                   </div>
@@ -1273,7 +1336,7 @@ export default function Home() {
             if (event.target === event.currentTarget) setModal(null);
           }}
         >
-          <div className="modal" role="dialog" aria-modal="true">
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" ref={dialogRef}>
             <div className="modal-head">
               <div>
                 <span className="eyebrow">
@@ -1281,7 +1344,7 @@ export default function Home() {
                     ? "DATA MANAGEMENT"
                     : "OPERATIONS WORKFLOW"}
                 </span>
-                <h2>
+                <h2 id="dialog-title">
                   {modal.kind === "entity"
                     ? `${modal.row ? "Edit" : "Add"} ${labels[modal.table]}`
                     : pretty(
@@ -1297,7 +1360,7 @@ export default function Home() {
                       )}
                 </h2>
               </div>
-              <button onClick={() => setModal(null)}>
+              <button aria-label="Close dialog" onClick={() => setModal(null)}>
                 <Icon name="close" size={20} />
               </button>
             </div>
