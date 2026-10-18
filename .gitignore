@@ -5,9 +5,8 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
-.env
 .vercel/
+.env*
 frontend/node_modules/
 frontend/.next/
 frontend/out/
-
