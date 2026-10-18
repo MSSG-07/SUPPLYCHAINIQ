@@ -1,14 +1,30 @@
 from pathlib import Path
 
 import pytest
+import libsql
 from fastapi.testclient import TestClient
 
 import backend.main as main
+from backend.database import LibsqlConnection
+from backend.database import connect as database_connect
 
 
-@pytest.fixture
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+@pytest.fixture(params=["sqlite", "libsql"])
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
     monkeypatch.setattr(main, "DB_PATH", tmp_path / "test.db")
+    if request.param == "libsql":
+        def connect_libsql() -> LibsqlConnection:
+            conn = LibsqlConnection(libsql.connect(database=str(main.DB_PATH)))
+            conn.execute("PRAGMA foreign_keys = ON")
+            return conn
+
+        monkeypatch.setattr(main, "connect", connect_libsql)
+        conn = connect_libsql()
+        try:
+            conn.executescript((main.ROOT / "schema.sql").read_text())
+            main.seed_demo(conn)
+        finally:
+            conn.close()
     with TestClient(main.app) as test_client:
         yield test_client
 
@@ -66,3 +82,24 @@ def test_supplier_contacts_are_separate_and_foreign_keys_protect_data(client: Te
     assert client.post("/api/data/supplier_contact", json={"supplier_id": supplier_id, "phone": "+91 12345 67890"}).status_code == 409
     assert client.delete(f"/api/data/supplier/{supplier_id}").status_code == 200
     assert all(row["supplier_id"] != supplier_id for row in client.get("/api/data/supplier_contact").json())
+
+
+def test_api_docs_live_under_public_proxy_prefix(client: TestClient):
+    spec = client.get("/api/openapi.json")
+    assert spec.status_code == 200
+    assert "/api/data/{table}" in spec.json()["paths"]
+    docs = client.get("/api/docs")
+    assert docs.status_code == 200
+    assert "/api/openapi.json" in docs.text
+
+
+def test_vercel_rejects_ephemeral_sqlite(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    monkeypatch.delenv("TURSO_AUTH_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="durable storage"):
+        database_connect()
+    monkeypatch.setenv("TURSO_DATABASE_URL", "/tmp/not-durable.db")
+    monkeypatch.setenv("TURSO_AUTH_TOKEN", "dummy")
+    with pytest.raises(RuntimeError, match="hosted"):
+        database_connect()

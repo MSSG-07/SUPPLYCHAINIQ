@@ -33,7 +33,6 @@ type Modal =
   | { kind: "action"; action: Action }
   | null;
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const labels: Record<string, string> = {
   supplier: "Suppliers",
   supplier_contact: "Supplier contacts",
@@ -97,15 +96,13 @@ const idText = (prefix: string, value: unknown) =>
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API}${path}`, {
+    response = await fetch(path, {
       ...options,
       headers: { "Content-Type": "application/json", ...options?.headers },
       cache: "no-store",
     });
   } catch {
-    throw new Error(
-      "Cannot reach FastAPI. Start the backend on localhost:8000.",
-    );
+    throw new Error("Cannot reach the SupplyChainIQ API through the frontend.");
   }
   const result = await response.json();
   if (!response.ok)

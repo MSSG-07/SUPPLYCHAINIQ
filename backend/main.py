@@ -1,4 +1,4 @@
-"""SupplyChainIQ API. SQLite is the source of truth for stock and constraints."""
+"""SupplyChainIQ API. SQLite-compatible SQL owns stock and constraints."""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+if __package__:
+    from .database import DB_ERRORS, LibsqlConnection, LibsqlRow, connect as db_connect
+else:
+    from database import DB_ERRORS, LibsqlConnection, LibsqlRow, connect as db_connect
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SUPPLYCHAINIQ_DB", ROOT / "supplychainiq.db"))
@@ -38,33 +43,28 @@ ORDER_TABLES = {"purchase_order": "po_id", "sales_order": "so_id"}
 ITEM_PARENT = {"purchase_order_item": ("purchase_order", "po_id"), "sales_order_item": ("sales_order", "so_id")}
 
 
-def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 10000")
-    return conn
+def connect() -> sqlite3.Connection | LibsqlConnection:
+    return db_connect(DB_PATH)
 
 
-def rowdict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def rowdict(row: sqlite3.Row | LibsqlRow | None) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def fail_if_missing(row: sqlite3.Row | None, label: str = "Record") -> sqlite3.Row:
+def fail_if_missing(row: sqlite3.Row | LibsqlRow | None, label: str = "Record") -> sqlite3.Row | LibsqlRow:
     if row is None:
         raise HTTPException(404, f"{label} not found")
     return row
 
 
-def db_error(error: sqlite3.Error) -> HTTPException:
+def db_error(error: Exception) -> HTTPException:
     message = str(error)
     if "FOREIGN KEY" in message:
         message = "This record is referenced elsewhere or a related record does not exist"
     return HTTPException(409, message)
 
 
-def seed_demo(conn: sqlite3.Connection) -> None:
+def seed_demo(conn: sqlite3.Connection | LibsqlConnection) -> None:
     if conn.execute("SELECT COUNT(*) FROM supplier").fetchone()[0]:
         return
     with conn:
@@ -124,20 +124,29 @@ def seed_demo(conn: sqlite3.Connection) -> None:
 async def lifespan(_: FastAPI):
     conn = connect()
     try:
-        conn.executescript((ROOT / "schema.sql").read_text())
-        seed_demo(conn)
+        if isinstance(conn, sqlite3.Connection):
+            conn.executescript((ROOT / "schema.sql").read_text())
+            seed_demo(conn)
+        else:
+            conn.execute("SELECT 1 FROM supplier LIMIT 1")
     finally:
         conn.close()
     yield
 
 
-app = FastAPI(title="SupplyChainIQ API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="SupplyChainIQ API", version="1.0.0", lifespan=lifespan,
+              docs_url="/api/docs", redoc_url="/api/redoc", openapi_url="/api/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "database": "SQLite"}
+    conn = connect()
+    try:
+        conn.execute("SELECT COUNT(*) FROM supplier")
+        return {"status": "ok", "database": "libSQL" if isinstance(conn, LibsqlConnection) else "SQLite"}
+    finally:
+        conn.close()
 
 
 @app.get("/api/meta")
@@ -161,7 +170,7 @@ def check_table(table: str, writable: bool = False) -> None:
         raise HTTPException(403, "Use the workflow endpoint for this entity")
 
 
-def columns(conn: sqlite3.Connection, table: str) -> set[str]:
+def columns(conn: sqlite3.Connection | LibsqlConnection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f'PRAGMA table_info("{table}")')}
 
 
@@ -177,7 +186,7 @@ def key_where(table: str, row_id: str) -> tuple[str, list[int]]:
     return " AND ".join(f'"{key}" = ?' for key in keys), values
 
 
-def ensure_editable(conn: sqlite3.Connection, table: str, data: dict[str, Any], row_id: str | None = None) -> None:
+def ensure_editable(conn: sqlite3.Connection | LibsqlConnection, table: str, data: dict[str, Any], row_id: str | None = None) -> None:
     if table in ITEM_PARENT:
         parent, key = ITEM_PARENT[table]
         parent_id = data.get(key)
@@ -231,7 +240,7 @@ def create_record(table: str, data: dict[str, Any]):
         with conn:
             cursor = conn.execute(f'INSERT INTO "{table}" ({names}) VALUES ({marks})', list(payload.values()))
         return {"id": cursor.lastrowid, "message": "Created"}
-    except sqlite3.Error as exc:
+    except DB_ERRORS as exc:
         raise db_error(exc) from exc
     finally:
         conn.close()
@@ -253,7 +262,7 @@ def update_record(table: str, row_id: str, data: dict[str, Any]):
         if not cursor.rowcount:
             raise HTTPException(404, "Record not found")
         return {"message": "Updated"}
-    except sqlite3.Error as exc:
+    except DB_ERRORS as exc:
         raise db_error(exc) from exc
     finally:
         conn.close()
@@ -271,7 +280,7 @@ def delete_record(table: str, row_id: str):
         if not cursor.rowcount:
             raise HTTPException(404, "Record not found")
         return {"message": "Deleted"}
-    except sqlite3.Error as exc:
+    except DB_ERRORS as exc:
         raise db_error(exc) from exc
     finally:
         conn.close()
@@ -302,7 +311,7 @@ def receive_purchase_order(po_id: int, data: dict[str, Any]):
                              (warehouse_id, item["product_id"], item["quantity"], po_id, f"PO #{po_id} line {item['line_no']}"))
             conn.execute("UPDATE purchase_order SET status = 'RECEIVED' WHERE po_id = ?", (po_id,))
         return {"message": "Purchase order received", "items": len(items)}
-    except sqlite3.Error as exc:
+    except DB_ERRORS as exc:
         raise db_error(exc) from exc
     finally: conn.close()
 
@@ -327,7 +336,7 @@ def ship_sales_order(so_id: int, data: dict[str, Any]):
                              (warehouse_id, item["product_id"], item["quantity"], so_id, f"SO #{so_id} line {item['line_no']}"))
             conn.execute("UPDATE sales_order SET status = 'SHIPPED' WHERE so_id = ?", (so_id,))
         return {"message": "Order shipped", "shipment_id": cursor.lastrowid}
-    except sqlite3.Error as exc:
+    except DB_ERRORS as exc:
         raise db_error(exc) from exc
     finally: conn.close()
 
@@ -348,7 +357,7 @@ def deliver_shipment(shipment_id: int, data: dict[str, Any]):
                 conn.execute("INSERT INTO delivery(shipment_id,status) VALUES (?,?)", (shipment_id, status))
             conn.execute("UPDATE sales_order SET status = ? WHERE so_id = ?", ("DELIVERED" if status == "DELIVERED" else "SHIPPED", shipment["so_id"]))
         return {"message": "Delivery updated", "status": status}
-    except sqlite3.Error as exc: raise db_error(exc) from exc
+    except DB_ERRORS as exc: raise db_error(exc) from exc
     finally: conn.close()
 
 
@@ -369,7 +378,7 @@ def create_return(data: dict[str, Any]):
             conn.execute("INSERT INTO stock_movement(warehouse_id,product_id,movement_type,quantity,reference_type,reference_id,note) VALUES (?,?,'RETURN',?,'RETURN',?,?)",
                          (shipment["warehouse_id"], item["product_id"], quantity, cursor.lastrowid, reason))
         return {"message": "Return recorded and stock restored", "return_id": cursor.lastrowid}
-    except sqlite3.Error as exc: raise db_error(exc) from exc
+    except DB_ERRORS as exc: raise db_error(exc) from exc
     finally: conn.close()
 
 
@@ -384,7 +393,7 @@ def adjust_stock(data: dict[str, Any]):
             conn.execute("INSERT INTO stock_movement(warehouse_id,product_id,movement_type,quantity,reference_type,note) VALUES (?,?,?,?, 'ADJUSTMENT',?)",
                          (warehouse_id, product_id, f"ADJUSTMENT_{direction}", quantity, str(data.get("note", "Manual adjustment"))))
         return {"message": "Stock adjusted"}
-    except sqlite3.Error as exc: raise db_error(exc) from exc
+    except DB_ERRORS as exc: raise db_error(exc) from exc
     finally: conn.close()
 
 
@@ -399,7 +408,7 @@ def transfer_stock(data: dict[str, Any]):
             conn.execute("INSERT INTO stock_movement(warehouse_id,product_id,movement_type,quantity,reference_type,note) VALUES (?,?,'TRANSFER_OUT',?,'TRANSFER',?)", (source, product_id, quantity, note))
             conn.execute("INSERT INTO stock_movement(warehouse_id,product_id,movement_type,quantity,reference_type,note) VALUES (?,?,'TRANSFER_IN',?,'TRANSFER',?)", (target, product_id, quantity, note))
         return {"message": "Stock transferred"}
-    except sqlite3.Error as exc: raise db_error(exc) from exc
+    except DB_ERRORS as exc: raise db_error(exc) from exc
     finally: conn.close()
 
 

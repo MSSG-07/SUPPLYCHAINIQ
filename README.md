@@ -1,6 +1,6 @@
 # SupplyChainIQ
 
-A local supply chain management app built from the project ER diagram. It uses **SQLite**, **FastAPI**, and **Next.js**. The API has interactive documentation at `/docs`; the dashboard has overview, inventory, procurement, sales, distribution, analytics, and a data explorer.
+A supply chain management app built from the project ER diagram. It uses **SQLite or hosted libSQL**, **FastAPI**, and **Next.js**. The dashboard has overview, inventory, procurement, sales, distribution, analytics, and a data explorer.
 
 ## Run locally
 
@@ -18,10 +18,28 @@ In a second terminal:
 ```bash
 cd frontend
 npm install
-npm run dev
+BACKEND_URL=http://localhost:8000 npm run dev
 ```
 
-Open **http://localhost:3000**. The API docs are at **http://localhost:8000/docs**. A new database is created at `backend/supplychainiq.db` and populated with sample records on first run. Set `SUPPLYCHAINIQ_DB=/path/to/file.db` to use another SQLite file. Set `NEXT_PUBLIC_API_URL` before starting Next.js if the API is not at `http://localhost:8000`.
+Open **http://localhost:3000**. The API docs are at **http://localhost:3000/docs** (also at `/api/docs`). A local database is created at `backend/supplychainiq.db` and populated with sample records on first run. Set `SUPPLYCHAINIQ_DB=/path/to/file.db` to use another local SQLite file. The Next.js API route reads `BACKEND_URL` at request time; the browser uses same-origin `/api` URLs.
+
+## Vercel services deployment
+
+The root [`vercel.json`](vercel.json) declares a public `frontend` Next.js service and a public `backend` FastAPI service. `/api/*` routes directly to FastAPI; other paths route to Next.js. The frontend's `/docs`, `/redoc`, and `/openapi.json` shortcuts call FastAPI through the runtime `BACKEND_URL` service binding. The Next.js `/api/*` proxy is used when running the two apps locally without Vercel's top-level rewrites. Do **not** set `BACKEND_URL` in Vercel yourself.
+
+Vercel Functions do not provide a durable shared SQLite file. For deployment, create a **libSQL** database in [Turso](https://docs.turso.tech/quickstart) (the default `turso db create supplychainiq` engine, rather than `--tursodb`). Get its URL with `turso db show --url supplychainiq` and a **database token** with `turso db tokens create supplychainiq`; a Turso Platform API key is not the database token. Set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` as Vercel project environment variables, including in each environment you deploy. The backend refuses to use a temporary SQLite file on Vercel when they are absent.
+
+Initialize the hosted database **once**, from a machine with those two environment variables set:
+
+```bash
+python -m backend.init_db
+# Optional, only on a new/empty database:
+python -m backend.init_db --seed
+```
+
+The initialization command creates the schema, indexes, triggers, and views. Production cold starts only check that the schema exists. Set the Vercel project's **Framework Preset** to **Services**, then deploy this repository. For local integration testing with Vercel's binding injection, install the Vercel CLI and run `vercel dev -L` from the repository root.
+
+The current app has no authentication. Anyone who can access a public deployment can use its CRUD and stock APIs; add access control before sharing a production URL broadly.
 
 ## What the database contains
 
@@ -38,7 +56,7 @@ Foreign keys, uniqueness rules, checks, and indexes are in [`backend/schema.sql`
 
 Inventory, stock movements, shipments, deliveries, and returns are managed through these workflows, so direct edits cannot quietly corrupt stock history. Master data, orders, line items, and supplier evaluations have create, read, update, and delete operations in **Data explorer**. Processed orders and their items are locked. Foreign keys prevent deleting referenced records.
 
-SQLite has no stored procedures, so the multi-step operations run as database transactions in FastAPI. This is a local project setup; there is no authentication or multi-tenant separation.
+SQLite has no stored procedures, so the multi-step operations run as database transactions in FastAPI. There is no authentication or multi-tenant separation.
 
 ## Checks
 
