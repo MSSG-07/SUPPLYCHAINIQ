@@ -332,6 +332,7 @@ td.strong { color: var(--ink); font-weight: 800; }
 .form-field i { color: var(--red); font-style: normal; }
 .form-field input, .form-field select { width: 100%; min-width: 0; min-height: 44px; padding: 9px 10px; border: var(--border); border-radius: var(--radius); background: var(--surface); color: var(--ink); font-size: 13px; }
 .form-field input::placeholder { color: #777970; }
+.form-field :is(input, select):disabled { background: #e8e8df; color: #696a64; cursor: not-allowed; }
 .form-field input:focus, .form-field select:focus { background: var(--lime-soft); }
 .form-help { grid-column: 1 / -1; margin: 0; padding: 10px; border-left: 4px solid var(--blue); background: var(--blue-soft); font-size: 12px; }
 .modal-error { grid-column: 1 / -1; padding: 11px 12px; }

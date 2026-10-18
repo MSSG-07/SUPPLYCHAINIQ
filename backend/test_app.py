@@ -50,6 +50,17 @@ def test_receive_order_updates_stock_once_and_keeps_derived_total(client: TestCl
 
 def test_transfer_is_atomic_and_sale_return_flow_is_consistent(client: TestClient):
     source_before = stock(client, 1, 6)
+    too_many = client.post("/api/stock/transfer", json={
+        "source_warehouse_id": 1, "target_warehouse_id": 2,
+        "product_id": 6, "quantity": source_before + 1,
+    })
+    assert too_many.status_code == 409
+    assert too_many.json()["detail"] == (
+        f"Only {source_before} units of this product are available in the source warehouse"
+    )
+    assert stock(client, 1, 6) == source_before
+    assert stock(client, 2, 6) == 0
+
     small = client.post("/api/data/warehouse", json={"name": "Tiny Depot", "capacity": 2})
     assert small.status_code == 201
     tiny_id = small.json()["id"]

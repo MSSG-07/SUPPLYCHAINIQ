@@ -1681,10 +1681,31 @@ function ActionFields({
       { name: "reason" },
     ],
   };
+  const sourceStock = (rows.inventory || []).filter(
+    (row) =>
+      String(row.warehouse_id) === form.source_warehouse_id &&
+      Number(row.quantity_on_hand) > 0,
+  );
+  const availableToTransfer =
+    action === "transfer" && form.product_id
+      ? Number(
+          sourceStock.find(
+            (row) => String(row.product_id) === form.product_id,
+          )?.quantity_on_hand || 0,
+        )
+      : null;
   return (
     <>
       {fields[action].map((item) => {
         let options = item.source ? rows[item.source] || [] : [];
+        if (action === "transfer" && item.name === "product_id")
+          options = options.filter((row) =>
+            sourceStock.some((stock) => String(stock.product_id) === String(row.product_id)),
+          );
+        if (action === "transfer" && item.name === "target_warehouse_id")
+          options = options.filter(
+            (row) => String(row.warehouse_id) !== form.source_warehouse_id,
+          );
         if (
           ["receive", "ship"].includes(action) &&
           ["po_id", "so_id"].includes(item.name)
@@ -1712,13 +1733,29 @@ function ActionFields({
             {item.source || item.choices ? (
               <select
                 required={!item.optional}
-                value={form[item.name] || ""}
-                onChange={(event) =>
-                  setForm((previous) => ({
-                    ...previous,
-                    [item.name]: event.target.value,
-                  }))
+                disabled={
+                  action === "transfer" &&
+                  item.name === "product_id" &&
+                  !form.source_warehouse_id
                 }
+                value={form[item.name] || ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setForm((previous) =>
+                    item.name === "source_warehouse_id" && action === "transfer"
+                      ? {
+                          ...previous,
+                          source_warehouse_id: value,
+                          target_warehouse_id:
+                            previous.target_warehouse_id === value
+                              ? ""
+                              : previous.target_warehouse_id,
+                          product_id: "",
+                          quantity: "",
+                        }
+                      : { ...previous, [item.name]: value },
+                  );
+                }}
               >
                 <option value="">
                   Select {pretty(item.name).toLowerCase()}
@@ -1737,12 +1774,27 @@ function ActionFields({
             ) : (
               <input
                 required={!item.optional}
+                disabled={
+                  action === "transfer" &&
+                  item.name === "quantity" &&
+                  !form.product_id
+                }
                 type={
                   ["quantity", "line_no"].includes(item.name)
                     ? "number"
                     : "text"
                 }
                 min="1"
+                max={
+                  action === "transfer" && item.name === "quantity"
+                    ? availableToTransfer ?? undefined
+                    : undefined
+                }
+                aria-describedby={
+                  action === "transfer" && item.name === "quantity"
+                    ? "transfer-stock-hint"
+                    : undefined
+                }
                 value={form[item.name] || ""}
                 onChange={(event) =>
                   setForm((previous) => ({
@@ -1756,6 +1808,17 @@ function ActionFields({
           </label>
         );
       })}
+      {action === "transfer" && (
+        <p className="form-help" id="transfer-stock-hint" aria-live="polite">
+          {!form.source_warehouse_id
+            ? "Choose a source warehouse to see which products are in stock."
+            : form.product_id
+              ? `${availableToTransfer} units available to transfer from this warehouse.`
+              : sourceStock.length
+                ? "Choose a stocked product to see the available quantity."
+                : "This warehouse has no stock. Receive or adjust stock before transferring."}
+        </p>
+      )}
       {action === "return" && form.so_id && (
         <p className="form-help">
           Available lines:{" "}

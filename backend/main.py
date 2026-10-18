@@ -59,7 +59,11 @@ def fail_if_missing(row: sqlite3.Row | LibsqlRow | None, label: str = "Record") 
 
 def db_error(error: Exception) -> HTTPException:
     message = str(error)
-    if "FOREIGN KEY" in message:
+    if "Insufficient stock in this warehouse" in message:
+        message = "Stock changed before this action completed. Refresh data and try a smaller quantity"
+    elif "Warehouse capacity exceeded" in message:
+        message = "The destination warehouse does not have enough free capacity"
+    elif "FOREIGN KEY" in message:
         message = "This record is referenced elsewhere or a related record does not exist"
     return HTTPException(409, message)
 
@@ -404,6 +408,16 @@ def transfer_stock(data: dict[str, Any]):
     conn = connect()
     try:
         with conn:
+            available = conn.execute(
+                "SELECT quantity_on_hand FROM inventory WHERE warehouse_id = ? AND product_id = ?",
+                (source, product_id),
+            ).fetchone()
+            available_units = available[0] if available else 0
+            if quantity > available_units:
+                raise HTTPException(
+                    409,
+                    f"Only {available_units} units of this product are available in the source warehouse",
+                )
             note = f"Transfer {source} → {target}"
             conn.execute("INSERT INTO stock_movement(warehouse_id,product_id,movement_type,quantity,reference_type,note) VALUES (?,?,'TRANSFER_OUT',?,'TRANSFER',?)", (source, product_id, quantity, note))
             conn.execute("INSERT INTO stock_movement(warehouse_id,product_id,movement_type,quantity,reference_type,note) VALUES (?,?,'TRANSFER_IN',?,'TRANSFER',?)", (target, product_id, quantity, note))
